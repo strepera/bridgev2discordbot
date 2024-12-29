@@ -7,7 +7,8 @@ import { Client, Intents, WebhookClient, MessageEmbed } from 'discord.js';
 const client = new Client({ intents: [Intents.FLAGS.GUILDS, Intents.FLAGS.GUILD_MESSAGES] });
 const bridgeWebhook = new WebhookClient({ id: process.env.BRIDGE_WEBHOOK_ID, token: process.env.BRIDGE_WEBHOOK_TOKEN})
 
-const ws = new WebSocket('ws://192.168.1.114:3000');
+const ws = new WebSocket('ws://192.168.1.110:3000');
+let guild;
 
 let onlinePlayers = [];
 
@@ -15,7 +16,7 @@ import { verify, unverify } from './verify.js';
 import gist from './gist.js';
 client.on('ready', async () => {
   console.log(`Logged in as ${client.user.tag}`);
-	const guild = await client.guilds.fetch(process.env.GUILD_ID);
+	guild = await client.guilds.fetch(process.env.GUILD_ID);
 
 	client.on('guildMemberAdd', async (member) => {
 		await welcomeChannel.send('Welcome <@' + member.user.id + '>!');
@@ -53,6 +54,25 @@ client.on('ready', async () => {
 	await guild.commands.create({
     name: "unverify",
     description: "Unlinks your minecraft and discord accounts",
+	})
+
+	await guild.commands.create({
+		name: "say",
+		description: "For admins only",
+		options: [
+			{
+        name: "message",
+        type: "STRING",
+        description: "message",
+        required: true
+    	},
+			{
+        name: "guild",
+        type: "STRING",
+        description: "guild",
+        required: true
+    	}
+		]
 	})
 });
 
@@ -98,6 +118,15 @@ client.on('message', async (message) => {
 		player: message.member.displayName.split(' ')[0],
 		message: msg
 	}))
+	let match;
+	if (match = msg.match(/^\.(\S+)(?: (.+))?/)) {
+		ws.send(JSON.stringify({
+			type: 'command',
+			player: message.member.displayName.split(' ')[0],
+			command: match[1],
+			args: match[2]
+		}))
+	}
 })
 
 
@@ -169,6 +198,17 @@ client.on('interactionCreate', async (interaction) => {
 			interaction.reply({embeds: [embed]})
 			break;
 
+		case "say":
+			if (interaction.user.id !== process.env.OWNER_ID) return;
+			const message = interaction.options.getString('message');
+			const guild = interaction.options.getString('guild');
+			ws.send({
+				type: "say",
+				message: message,
+				guild: guild
+			})
+			interaction.reply({content: "Sent message", ephemeral:true});
+
 		default:
 			break;
 	}
@@ -182,7 +222,8 @@ ws.on('open', () => {
 	ws.send(JSON.stringify({
 		type: 'init',
 		guild: 'Discord',
-		username: '*DiscordBot'
+		username: '*DiscordBot',
+		prefix: 'dc'
 	}))
 })
 
@@ -206,16 +247,16 @@ ws.on('message', (data) => {
 		case "chat":
 			console.log(json.player + ": " + json.message);
 			bridgeWebhook.send({
-				content: `${json.message}\n-# ${json.guild}`,
-				username: json.player,
+				content: `${json.message}`,
+				username: `[${json.prefix}] ${json.player}`,
 				avatarURL: `https://minotar.net/helm/${json.player}/32`
 			})
 			break;
 		
 		case "playerListChange":
 			onlinePlayers = json.players;
-			client.user.setActivity(`Beating ${onlinePlayers.length} players!`, {
-				type: "CUSTOM"
+			client.user.setActivity(`${onlinePlayers.length} players!`, {
+				type: "WATCHING"
 			})
 			
 			if (json.difference > 0) {
@@ -244,6 +285,10 @@ ws.on('message', (data) => {
 			}
 			break;
 
+		case "mute":
+			const users = guild.members.cache.filter(user => user.displayName.split(" ")[0] == json.player);
+			users.forEach(user => user.timeout(json.duration*1000, json.reason))
+		
 		default: 
 			console.error("\nInvalid packet sent from server\n");
 			break;
